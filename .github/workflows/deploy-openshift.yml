@@ -1,0 +1,85 @@
+name: Build and deploy Silver Page Reviewer
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        type: choice
+        options: [development, qa, production]
+        default: development
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: silver-page-reviewer-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/databricks-silver-page-reviewer:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}
+      - uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: latest
+      - name: Deploy to OpenShift
+        shell: bash
+        env:
+          OPENSHIFT_SERVER: ${{ vars.OPENSHIFT_SERVER }}
+          OPENSHIFT_NAMESPACE: ${{ vars.OPENSHIFT_NAMESPACE }}
+          OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+          DATABRICKS_HOST: ${{ vars.DATABRICKS_HOST }}
+          DATABRICKS_SQL_WAREHOUSE_ID: ${{ vars.DATABRICKS_SQL_WAREHOUSE_ID }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+          AZURE_STORAGE_ENDPOINT: ${{ vars.AZURE_STORAGE_ENDPOINT }}
+          AZURE_STORAGE_CONTAINER: ${{ vars.AZURE_STORAGE_CONTAINER }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          oc login "$OPENSHIFT_SERVER" --token="$OPENSHIFT_TOKEN"
+          oc project "$OPENSHIFT_NAMESPACE"
+          oc create secret generic databricks-silver-page-reviewer-secret \
+            --from-literal=DATABRICKS_CLIENT_ID="$DATABRICKS_CLIENT_ID" \
+            --from-literal=DATABRICKS_CLIENT_SECRET="$DATABRICKS_CLIENT_SECRET" \
+            --from-literal=AZURE_CLIENT_ID="$AZURE_CLIENT_ID" \
+            --from-literal=AZURE_TENANT_ID="$AZURE_TENANT_ID" \
+            --from-literal=AZURE_CLIENT_SECRET="$AZURE_CLIENT_SECRET" \
+            --dry-run=client -o yaml | oc apply -f -
+          oc create configmap databricks-silver-page-reviewer-config \
+            --from-literal=SERVER_PORT=8080 \
+            --from-literal=DATABRICKS_HOST="$DATABRICKS_HOST" \
+            --from-literal=DATABRICKS_SQL_WAREHOUSE_ID="$DATABRICKS_SQL_WAREHOUSE_ID" \
+            --from-literal=DATABRICKS_FINE_PAGES_TABLE=education_rag.silver.fine_grained_pages \
+            --from-literal=DATABRICKS_REVIEWS_TABLE=education_rag.silver.fine_page_reviews \
+            --from-literal=AZURE_STORAGE_ENDPOINT="$AZURE_STORAGE_ENDPOINT" \
+            --from-literal=AZURE_STORAGE_CONTAINER="$AZURE_STORAGE_CONTAINER" \
+            --dry-run=client -o yaml | oc apply -f -
+          sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" openshift/deployment.yaml | oc apply -f -
+          oc rollout status deployment/databricks-silver-page-reviewer --timeout=300s
+          echo "https://$(oc get route databricks-silver-page-reviewer -o jsonpath='{.spec.host}')"

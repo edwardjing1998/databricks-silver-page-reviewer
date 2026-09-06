@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: databricks-silver-page-reviewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: databricks-silver-page-reviewer
+  template:
+    metadata:
+      labels:
+        app: databricks-silver-page-reviewer
+    spec:
+      containers:
+        - name: reviewer
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: databricks-silver-page-reviewer-config
+            - secretRef:
+                name: databricks-silver-page-reviewer-secret
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: databricks-silver-page-reviewer
+spec:
+  selector:
+    app: databricks-silver-page-reviewer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: databricks-silver-page-reviewer
+spec:
+  to:
+    kind: Service
+    name: databricks-silver-page-reviewer
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

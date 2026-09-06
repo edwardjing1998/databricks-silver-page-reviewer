@@ -1,0 +1,27 @@
+{
+  "name": "databricks-silver-page-reviewer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"SERVER_PORT=8081 node --watch server/index.mjs\"",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.11.1",
+    "@azure/storage-blob": "^12.28.0",
+    "express": "^5.1.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.2",
+    "concurrently": "^9.2.1",
+    "vite": "^7.1.4"
+  }
+}
