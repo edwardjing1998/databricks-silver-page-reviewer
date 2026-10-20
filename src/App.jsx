@@ -475,7 +475,7 @@ export default function App() {
             <option value="OTHER">
               OTHER
             </option>
-            </>
+            </>}
           </select>
         </label>
 
