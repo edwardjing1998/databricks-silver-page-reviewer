@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import express from "express";
+import { candidateBibleBlobPaths } from "./bible-images.mjs";
 import {
   BlobServiceClient,
 } from "@azure/storage-blob";
@@ -832,28 +833,54 @@ app.put("/api/bible/pages/:id/review", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-/** Serve only Azure image links explicitly associated with the requested Bible scene. */
+/** Resolve Bible relative figure links against the actual Bronze source path. */
 app.get("/api/bible/pages/:id/image", async (req, res, next) => {
   try {
     const link = String(req.query.link || "").trim();
     if (!link || link.includes("..")) return res.status(400).json({error:"Invalid image link"});
     const [scene] = await execute(applicationConfig, `
-      SELECT image_links FROM ${bibleScenesTable} WHERE scene_id = :id AND is_active = true LIMIT 1
+      SELECT scene_id, document_id, book_id, chapter_id, page_number, image_links
+      FROM ${bibleScenesTable} WHERE scene_id = :id AND is_active = true LIMIT 1
     `, [parameter("id", req.params.id)]);
     if (!scene) return res.status(404).json({error:"Bible scene not found"});
     const links = typeof scene.image_links === "string"
       ? JSON.parse(scene.image_links) : (scene.image_links || []);
     if (!Array.isArray(links) || !links.includes(link))
       return res.status(404).json({error:"Image is not linked to this scene"});
-    const resolved = resolveBlobReference(link, applicationConfig.storageContainer);
-    const client = blobContainerClient.getBlobClient(resolved.blobName);
-    if (!(await client.exists())) return res.status(404).json({error:"Image not found in Azure Storage"});
-    const download = await client.download();
-    res.setHeader("Content-Type", download.contentType || "image/png");
-    res.setHeader("Cache-Control", "private, max-age=300");
-    if (!download.readableStreamBody) return res.status(500).json({error:"Empty Azure image stream"});
-    download.readableStreamBody.on("error", next);
-    download.readableStreamBody.pipe(res);
+
+    // The scene stores relative links (for example figures/figure-3.png),
+    // not the full generated/.../figures/... Azure blob location.
+    const bronzeTable = safeTableName(`${bibleScenesTable.split('.')[0]}.bronze.markdown_documents`);
+    const [source] = await execute(applicationConfig, `
+      SELECT * FROM ${bronzeTable} WHERE document_id = :documentId LIMIT 1
+    `, [parameter("documentId", scene.document_id)]);
+    const candidates = candidateBibleBlobPaths(link, scene, source || {});
+    const attempted = [];
+    for (const storedPath of candidates) {
+      let resolved;
+      try {
+        resolved = resolveBlobReference(storedPath, applicationConfig.storageContainer);
+      } catch (error) {
+        attempted.push({path: storedPath, error: error.message});
+        continue;
+      }
+      attempted.push({path: resolved.blobName});
+      const client = blobContainerClient.getBlobClient(resolved.blobName);
+      if (!(await client.exists())) continue;
+      const download = await client.download();
+      res.setHeader("Content-Type", download.contentType || "image/png");
+      res.setHeader("Cache-Control", "private, max-age=300");
+      if (!download.readableStreamBody) return res.status(500).json({error:"Empty Azure image stream"});
+      download.readableStreamBody.on("error", next);
+      return download.readableStreamBody.pipe(res);
+    }
+    return res.status(404).json({
+      error: "Figure was referenced by the Bible scene but not found in Azure Storage",
+      requestedLink: link,
+      documentId: scene.document_id,
+      attempted,
+      hint: "Verify the Bronze markdown source path and generated figure blob location."
+    });
   } catch (error) { next(error); }
 });
 
