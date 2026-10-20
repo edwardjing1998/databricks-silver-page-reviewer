@@ -42,6 +42,9 @@ async function request(
 
 
 export default function App() {
+  const [mode, setMode] = useState("math");
+  const bible = mode === "bible";
+  const apiBase = bible ? "/api/bible/pages" : "/api/pages";
   const [
     filters,
     setFilters,
@@ -126,7 +129,7 @@ export default function App() {
         try {
           const data =
             await request(
-              `/api/pages?${query}`
+              `${apiBase}?${query}`
             );
 
           const loadedPages =
@@ -156,7 +159,7 @@ export default function App() {
           setLoading(false);
         }
       },
-      [query]
+      [query, apiBase]
     );
 
 
@@ -180,7 +183,7 @@ export default function App() {
       try {
         const data =
           await request(
-            "/api/filter-options"
+            bible ? "/api/bible/filter-options" : "/api/filter-options"
           );
 
         if (!cancelled) {
@@ -206,7 +209,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bible]);
 
 
   /**
@@ -284,7 +287,7 @@ export default function App() {
     }
 
     return (
-      `/api/pages/` +
+      `${apiBase}/` +
       `${encodeURIComponent(
         selected.fine_page_id
       )}/image?link=` +
@@ -303,7 +306,7 @@ export default function App() {
 
     try {
       await request(
-        `/api/pages/${encodeURIComponent(
+        `${apiBase}/${encodeURIComponent(
           selected.fine_page_id
         )}/review`,
         {
@@ -341,7 +344,7 @@ export default function App() {
           </span>
 
           <h1>
-            Fine-grained page review
+            {bible ? "Bible scene review" : "Fine-grained page review"}
           </h1>
         </div>
 
@@ -355,6 +358,14 @@ export default function App() {
       </header>
 
 
+      <nav className="mode-tabs" aria-label="Reviewer mode">
+        <button className={bible ? "" : "selected"} onClick={() => {
+          setMode("math"); setFilters({...emptyFilters}); setSelected(null); setComment("");
+        }}>Mathematics pages</button>
+        <button className={bible ? "selected" : ""} onClick={() => {
+          setMode("bible"); setFilters({...emptyFilters}); setSelected(null); setComment("");
+        }}>Bible pages &amp; scenes</button>
+      </nav>
       <section className="filters">
         <label>
           Book ID
@@ -443,6 +454,12 @@ export default function App() {
               All types
             </option>
 
+            {bible ? <>
+              {["SCRIPTURE_STORY", "SCRIPTURE_REFERENCE", "DOCTRINAL_TEACHING",
+                "LIFE_APPLICATION", "DISCUSSION_QUESTION", "PRAYER_REFLECTION",
+                "TABLE_OF_CONTENTS", "OTHER"].map(type =>
+                  <option key={type} value={type}>{type}</option>)}
+            </> : <>
             <option value="KNOWLEDGE">
               KNOWLEDGE
             </option>
@@ -458,6 +475,7 @@ export default function App() {
             <option value="OTHER">
               OTHER
             </option>
+            </>
           </select>
         </label>
 
@@ -593,8 +611,8 @@ export default function App() {
         <article>
           {!selected ? (
             <div className="empty">
-              No active fine-grained pages
-              matched the selected filters.
+              {bible ? "No active Bible scenes" : "No active fine-grained pages"}
+              {" matched the selected filters."}
             </div>
           ) : (
             <>
@@ -662,8 +680,8 @@ export default function App() {
 
               <div className="metadata">
                 <span>
-                  <b>Knowledge</b>
-                  {selected.knowledge_id}
+                  <b>{bible ? "Scripture references" : "Knowledge"}</b>
+                  {bible ? (selected.scripture_references || []).join(", ") : selected.knowledge_id}
                 </span>
 
                 <span>
@@ -695,8 +713,8 @@ export default function App() {
                 </span>
 
                 <span>
-                  <b>Source pages</b>
-                  {(
+                  <b>{bible ? "Page number" : "Source pages"}</b>
+                  {bible ? selected.page_number : (
                     selected
                       .source_page_numbers ||
                     []
@@ -704,13 +722,13 @@ export default function App() {
                 </span>
 
                 <span>
-                  <b>Preserved</b>
-                  {
+                  <b>{bible ? "AI review required" : "Preserved"}</b>
+                  {bible ? (selected.review_required === true || String(selected.review_required) === "true" ? "Yes" : "No") : (
                     selected
                       .preserved_original
                       ? "Yes"
                       : "No"
-                  }
+                  )}
                 </span>
               </div>
 

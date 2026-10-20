@@ -31,6 +31,28 @@ const reviewsTable = safeTableName(
   applicationConfig.reviewsTable
 );
 
+const bibleAnalysisTable = safeTableName(applicationConfig.bibleAnalysisTable);
+const bibleScenesTable = safeTableName(applicationConfig.bibleScenesTable);
+const bibleReviewsTable = safeTableName(applicationConfig.bibleReviewsTable);
+
+// Store human review decisions outside model-generated classification tables.
+// This table requires CREATE TABLE permission on the configured Silver schema.
+let bibleReviewTableReady = false;
+async function ensureBibleReviewTable() {
+  if (bibleReviewTableReady) return;
+  await execute(applicationConfig, `
+    CREATE TABLE IF NOT EXISTS ${bibleReviewsTable} (
+      scene_id STRING NOT NULL,
+      review_status STRING,
+      reviewed_by STRING,
+      reviewed_at TIMESTAMP,
+      review_comment STRING,
+      reviewed_content_hash STRING
+    ) USING DELTA
+  `);
+  bibleReviewTableReady = true;
+}
+
 const azureCredential =
   new DefaultAzureCredential();
 
@@ -59,6 +81,7 @@ const arrayColumns = new Set([
   "source_document_ids",
   "block_ids",
   "image_links",
+  "scripture_references",
 ]);
 
 
@@ -89,6 +112,9 @@ function parseRow(row) {
 
   row.review_status =
     row.review_status || "PENDING";
+
+  row.review_required =
+    String(row.review_required).toLowerCase() === "true";
 
   return row;
 }
@@ -717,6 +743,119 @@ app.put(
   }
 );
 
+
+
+/** Bible-scene filter options, independent of maths. */
+app.get("/api/bible/filter-options", async (_req, res, next) => {
+  try {
+    const items = await execute(applicationConfig, `
+      SELECT DISTINCT book_id, chapter_id
+      FROM ${bibleScenesTable}
+      WHERE is_active = true AND book_id IS NOT NULL AND chapter_id IS NOT NULL
+      ORDER BY book_id, chapter_id
+    `);
+    res.json({items});
+  } catch (error) { next(error); }
+});
+
+/** List classified Bible scenes with their persisted analysis status and reviewer decisions. */
+app.get("/api/bible/pages", async (req, res, next) => {
+  try {
+    await ensureBibleReviewTable();
+    const params = [];
+    const clauses = ["s.is_active = true"];
+    const choices = {
+      bookId: "s.book_id", chapterId: "s.chapter_id",
+      pageType: "s.scene_type", reviewStatus: "COALESCE(r.review_status, 'PENDING')",
+    };
+    for (const [key, column] of Object.entries(choices)) {
+      const value = String(req.query[key] || "").trim();
+      if (value) { clauses.push(`${column} = :${key}`); params.push(parameter(key, value)); }
+    }
+    const limit = Math.max(1, Math.min(200, Math.trunc(Number(req.query.limit) || 100)));
+    const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+    const items = await execute(applicationConfig, `
+      SELECT s.scene_id AS fine_page_id, s.analysis_id AS window_id,
+        s.scene_id AS section_id, s.book_id, s.chapter_id,
+        s.scene_type AS page_type, s.sequence_number, s.title,
+        s.caption, s.scripture_references,
+        CAST(NULL AS STRING) AS knowledge_id,
+        s.markdown_content, s.block_ids, s.image_links,
+        s.document_id, s.page_number,
+        s.classification_confidence, s.review_required,
+        a.processing_status AS classification_status,
+        a.processing_error AS classification_error,
+        COALESCE(r.review_status, 'PENDING') AS review_status,
+        r.reviewed_by, r.reviewed_at, r.review_comment
+      FROM ${bibleScenesTable} s
+      LEFT JOIN ${bibleAnalysisTable} a ON s.analysis_id = a.analysis_id
+      LEFT JOIN ${bibleReviewsTable} r ON s.scene_id = r.scene_id
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY s.book_id, s.chapter_id, s.page_number, s.sequence_number, s.scene_id
+      LIMIT :limit OFFSET :offset
+    `, [...params, parameter("limit", limit, "INT"), parameter("offset", offset, "INT")]);
+    res.json({items: items.map(parseRow), limit, offset});
+  } catch (error) { next(error); }
+});
+
+/** Persist Bible reviewer decisions independently of AI output, preserving rerun safety. */
+app.put("/api/bible/pages/:id/review", async (req, res, next) => {
+  try {
+    await ensureBibleReviewTable();
+    const decision = String(req.body?.decision || "").trim().toUpperCase();
+    const comment = String(req.body?.comment || "").trim().slice(0, 4000);
+    if (!["APPROVED", "REJECTED", "NEEDS_CHANGES"].includes(decision))
+      return res.status(400).json({error:"Invalid review decision"});
+    const [scene] = await execute(applicationConfig, `
+      SELECT scene_id FROM ${bibleScenesTable} WHERE scene_id = :id AND is_active = true LIMIT 1
+    `, [parameter("id", req.params.id)]);
+    if (!scene) return res.status(404).json({error:"Active Bible scene not found"});
+    await execute(applicationConfig, `
+      MERGE INTO ${bibleReviewsTable} AS r
+      USING (
+        SELECT :id AS scene_id, :decision AS review_status,
+          current_user() AS reviewed_by, current_timestamp() AS reviewed_at,
+          :comment AS review_comment,
+          sha2(markdown_content, 256) AS reviewed_content_hash
+        FROM ${bibleScenesTable} WHERE scene_id = :id AND is_active = true
+      ) AS n ON r.scene_id = n.scene_id
+      WHEN MATCHED THEN UPDATE SET
+        r.review_status = n.review_status, r.reviewed_by = n.reviewed_by,
+        r.reviewed_at = n.reviewed_at, r.review_comment = n.review_comment,
+        r.reviewed_content_hash = n.reviewed_content_hash
+      WHEN NOT MATCHED THEN INSERT (
+        scene_id, review_status, reviewed_by, reviewed_at, review_comment, reviewed_content_hash
+      ) VALUES (n.scene_id, n.review_status, n.reviewed_by, n.reviewed_at,
+        n.review_comment, n.reviewed_content_hash)
+    `, [parameter("id", req.params.id), parameter("decision", decision), parameter("comment", comment)]);
+    res.json({sceneId:req.params.id, reviewStatus:decision});
+  } catch (error) { next(error); }
+});
+
+/** Serve only Azure image links explicitly associated with the requested Bible scene. */
+app.get("/api/bible/pages/:id/image", async (req, res, next) => {
+  try {
+    const link = String(req.query.link || "").trim();
+    if (!link || link.includes("..")) return res.status(400).json({error:"Invalid image link"});
+    const [scene] = await execute(applicationConfig, `
+      SELECT image_links FROM ${bibleScenesTable} WHERE scene_id = :id AND is_active = true LIMIT 1
+    `, [parameter("id", req.params.id)]);
+    if (!scene) return res.status(404).json({error:"Bible scene not found"});
+    const links = typeof scene.image_links === "string"
+      ? JSON.parse(scene.image_links) : (scene.image_links || []);
+    if (!Array.isArray(links) || !links.includes(link))
+      return res.status(404).json({error:"Image is not linked to this scene"});
+    const resolved = resolveBlobReference(link, applicationConfig.storageContainer);
+    const client = blobContainerClient.getBlobClient(resolved.blobName);
+    if (!(await client.exists())) return res.status(404).json({error:"Image not found in Azure Storage"});
+    const download = await client.download();
+    res.setHeader("Content-Type", download.contentType || "image/png");
+    res.setHeader("Cache-Control", "private, max-age=300");
+    if (!download.readableStreamBody) return res.status(500).json({error:"Empty Azure image stream"});
+    download.readableStreamBody.on("error", next);
+    download.readableStreamBody.pipe(res);
+  } catch (error) { next(error); }
+});
 
 /**
  * Serve the production React build.

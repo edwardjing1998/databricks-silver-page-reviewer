@@ -22,3 +22,7 @@ article { padding: 26px; max-width: 1120px; width: 100%; margin: 0 auto; }.artic
 .review-panel { margin-top: 18px; padding: 18px; background: white; border-radius: 10px; border: 1px solid #dfe4ea; }.review-panel h3 { margin-top: 0; }.review-panel textarea { min-height: 80px; resize: vertical; }.review-actions { display: flex; gap: 10px; margin: 12px 0; }.review-actions button { border: 0; border-radius: 7px; padding: 10px 16px; font-weight: 700; }.approve { background: #167245; color: white; }.changes { background: #fca311; color: #352200; }.reject { background: #b72c2c; color: white; }
 .error { margin: 14px 28px 0; padding: 12px 16px; background: #fff0f0; border-left: 4px solid #c62828; display: grid; gap: 3px; }.muted, .empty { color: #6c7784; padding: 20px; }
 @media (max-width: 850px) { .filters { grid-template-columns: 1fr 1fr; } main { grid-template-columns: 1fr; } aside { max-height: 260px; border-right: 0; border-bottom: 1px solid #ddd; } .metadata { grid-template-columns: 1fr 1fr; } .article-head { align-items: flex-start; flex-direction: column; } }
+
+.mode-tabs { display:flex; gap:8px; padding:12px 28px; background:#e9eef5; border-bottom:1px solid #d3dae6; }
+.mode-tabs button { background:#fff; color:#203b58; border:1px solid #c5cfdd; border-radius:8px; padding:10px 16px; font-weight:700; }
+.mode-tabs button.selected { background:#14213d; border-color:#14213d; color:#fff; }
