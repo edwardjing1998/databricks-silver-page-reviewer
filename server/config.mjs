@@ -16,6 +16,7 @@ export function config() {
     bibleAnalysisTable: process.env.DATABRICKS_BIBLE_ANALYSIS_TABLE || "education_rag.silver.bible_page_analysis",
     bibleScenesTable: process.env.DATABRICKS_BIBLE_SCENES_TABLE || "education_rag.silver.bible_story_scenes",
     bibleReviewsTable: process.env.DATABRICKS_BIBLE_REVIEWS_TABLE || "education_rag.silver.bible_scene_reviews",
+    approvedGoldTable: process.env.DATABRICKS_GOLD_APPROVED_TABLE || "education_rag.gold.approved_search_documents",
     storageEndpoint: required("AZURE_STORAGE_ENDPOINT").replace(/\/$/, ""),
     storageContainer: required("AZURE_STORAGE_CONTAINER")
   };

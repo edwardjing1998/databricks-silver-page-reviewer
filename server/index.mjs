@@ -35,6 +35,7 @@ const reviewsTable = safeTableName(
 const bibleAnalysisTable = safeTableName(applicationConfig.bibleAnalysisTable);
 const bibleScenesTable = safeTableName(applicationConfig.bibleScenesTable);
 const bibleReviewsTable = safeTableName(applicationConfig.bibleReviewsTable);
+const approvedGoldTable = safeTableName(applicationConfig.approvedGoldTable);
 
 // Store human review decisions outside model-generated classification tables.
 // This table requires CREATE TABLE permission on the configured Silver schema.
@@ -745,6 +746,92 @@ app.put(
 );
 
 
+
+/** Published Gold records are read-only: their review decisions belong to Silver. */
+app.get("/api/gold/filter-options", async (_req, res, next) => {
+  try {
+    const items = await execute(applicationConfig, `
+      SELECT DISTINCT book_id, chapter_id
+      FROM ${approvedGoldTable}
+      WHERE book_id IS NOT NULL AND chapter_id IS NOT NULL
+      ORDER BY book_id, chapter_id
+    `);
+    res.json({items});
+  } catch (error) { next(error); }
+});
+
+/** Page selector: Gold has source_record_id, but no page_number column. */
+app.get("/api/gold/page-options", async (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    for (const [key, column] of Object.entries({bookId:"book_id", chapterId:"chapter_id"})) {
+      const value = String(req.query[key] || "").trim();
+      if (value) { clauses.push(`${column} = :${key}`); params.push(parameter(key, value)); }
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const items = await execute(applicationConfig, `
+      SELECT search_id, source_record_id, title, subject, content_type
+      FROM ${approvedGoldTable} ${where}
+      ORDER BY subject, title, source_record_id, search_id
+      LIMIT 1000
+    `, params);
+    res.json({items});
+  } catch (error) { next(error); }
+});
+
+app.get("/api/gold/pages", async (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    const fields = {bookId:"book_id", chapterId:"chapter_id", pageType:"content_type", pageId:"search_id"};
+    for (const [key, column] of Object.entries(fields)) {
+      const value = String(req.query[key] || "").trim();
+      if (value) { clauses.push(`${column} = :${key}`); params.push(parameter(key, value)); }
+    }
+    const limit = Math.max(1, Math.min(200, Math.trunc(Number(req.query.limit) || 100)));
+    const offset = Math.max(0, Math.trunc(Number(req.query.offset) || 0));
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const items = await execute(applicationConfig, `
+      SELECT search_id AS fine_page_id, search_id, subject, content_type AS page_type,
+        source_record_id, document_id, book_id, chapter_id, title,
+        searchable_text AS markdown_content, image_links_json, source_hash,
+        approved_by AS reviewed_by, approved_at AS reviewed_at, published_at,
+        'APPROVED' AS review_status
+      FROM ${approvedGoldTable} ${where}
+      ORDER BY book_id, chapter_id, subject, title, source_record_id, search_id
+      LIMIT :limit OFFSET :offset
+    `, [...params, parameter("limit", limit, "INT"), parameter("offset", offset, "INT")]);
+    res.json({items:items.map(row => {
+      let links=[];
+      try { const parsed=JSON.parse(row.image_links_json || "[]"); if(Array.isArray(parsed)) links=parsed; } catch {}
+      return {...parseRow(row), image_links:links};
+    }), limit, offset});
+  } catch (error) { next(error); }
+});
+
+/** Use existing Silver image resolution, but only for links published in Gold. */
+app.get("/api/gold/pages/:id/image", async (req, res, next) => {
+  try {
+    const link = String(req.query.link || "").trim();
+    if (!link || link.includes("..")) return res.status(400).json({error:"Invalid image link"});
+    const [record] = await execute(applicationConfig, `
+      SELECT subject, source_record_id, image_links_json
+      FROM ${approvedGoldTable} WHERE search_id = :id LIMIT 1
+    `, [parameter("id", req.params.id)]);
+    if (!record) return res.status(404).json({error:"Published Gold record not found"});
+    let links = [];
+    try { links = JSON.parse(record.image_links_json || "[]"); } catch {}
+    if (!Array.isArray(links) || !links.includes(link))
+      return res.status(404).json({error:"Image is not referenced by this published record"});
+    if (!["bible", "mathematics"].includes(record.subject))
+      return res.status(404).json({error:"Image preview unavailable for subject"});
+    const prefix = record.subject === "bible" ? "/api/bible/pages" : "/api/pages";
+    // Internal redirect: reuse existing validation and Azure image resolution.
+    // This stays on the same application and does not expose storage credentials.
+    res.redirect(307, `${prefix}/${encodeURIComponent(record.source_record_id)}/image?link=${encodeURIComponent(link)}`);
+  } catch (error) { next(error); }
+});
 
 /** Bible-scene filter options, independent of maths. */
 app.get("/api/bible/filter-options", async (_req, res, next) => {
